@@ -1,4 +1,5 @@
-use std::{collections::HashMap, convert::TryInto, path::Path, sync::Arc};
+#![allow(clippy::suspicious_open_options)]
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use actix::prelude::*;
 use bean_factory::{bean, Inject};
@@ -57,7 +58,7 @@ impl RaftIndexInnerManager {
             file.seek(std::io::SeekFrom::Start(0)).await?;
             file.write_all(&buf).await?;
             file.flush().await?;
-            let raft_index: RaftIndexDto = index.try_into()?;
+            let raft_index: RaftIndexDto = index.into();
             (0, raft_index)
         } else {
             //read
@@ -68,7 +69,7 @@ impl RaftIndexInnerManager {
             let buf = file_reader.read_next().await?;
             let mut reader = BytesReader::from_bytes(&buf);
             let index: RaftIndex = reader.read_message(&buf)?;
-            let raft_index: RaftIndexDto = index.try_into()?;
+            let raft_index: RaftIndexDto = index.into();
             (last_applied_log, raft_index)
         };
         Ok(Self {

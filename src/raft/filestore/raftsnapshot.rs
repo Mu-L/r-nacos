@@ -1,3 +1,4 @@
+#![allow(clippy::suspicious_open_options)]
 use std::{path::Path, sync::Arc};
 
 use actix::prelude::*;

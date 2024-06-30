@@ -79,6 +79,7 @@ pub(crate) async fn get_config(
         md5,
         config_type,
         desc,
+        ..
     })) = appdata.config_addr.send(cmd).await
     {
         HttpResponse::Ok().json(ApiResult::success(Some(ConfigInfo {
@@ -110,7 +111,7 @@ pub async fn add_config(
     let mut req = SetConfigReq::new(config_key, content);
     req.config_type = param.config_type;
     req.desc = param.desc;
-    if let Ok(_) = appdata.config_route.set_config(req).await {
+    if appdata.config_route.set_config(req).await.is_ok() {
         HttpResponse::Ok().json(ApiResult::success(Some(true)))
     } else {
         HttpResponse::Ok().json(ApiResult::<()>::error(

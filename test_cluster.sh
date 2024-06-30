@@ -50,6 +50,7 @@ RNACOS_RAFT_NODE_ADDR=127.0.0.1:9848
 RNACOS_CONFIG_DB_DIR=cluster_example/db_01
 RNACOS_RAFT_NODE_ID=1
 RNACOS_RAFT_AUTO_INIT=true
+RNACOS_ENABLE_NO_AUTH_CONSOLE=true
 EOF
     nohup ${app_path} -e $env_file >"$test_dir/node_01.log" &
     sleep 1
@@ -64,6 +65,7 @@ RNACOS_RAFT_NODE_ADDR=127.0.0.1:9849
 RNACOS_CONFIG_DB_DIR=cluster_example/db_02
 RNACOS_RAFT_NODE_ID=2
 RNACOS_RAFT_JOIN_ADDR=127.0.0.1:9848
+RNACOS_ENABLE_NO_AUTH_CONSOLE=true
 EOF
     nohup ${app_path} -e $env_file >"$test_dir/node_02.log" &
     sleep 1
@@ -73,12 +75,13 @@ EOF
     cat >$env_file <<EOF
 #file:env03
 #RUST_LOG=debug|info|warn|error, default is info
-RUST_LOG=warn
+#RUST_LOG=warn
 RNACOS_HTTP_PORT=8850
 RNACOS_RAFT_NODE_ADDR=127.0.0.1:9850
 RNACOS_CONFIG_DB_DIR=cluster_example/db_03
 RNACOS_RAFT_NODE_ID=3
 RNACOS_RAFT_JOIN_ADDR=127.0.0.1:9848
+RNACOS_ENABLE_NO_AUTH_CONSOLE=true
 EOF
     nohup ${app_path} -e $env_file >"$test_dir/node_03.log" &
     sleep 1

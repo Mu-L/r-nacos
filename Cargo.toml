@@ -1,6 +1,6 @@
 [package]
 name = "rnacos"
-version = "0.5.8-beta.1"
+version = "0.5.14"
 authors = ["heqingpan <heqingpan@126.com>"]
 edition = "2018"
 license = "Apache-2.0"
@@ -10,6 +10,19 @@ repository = "https://github.com/heqingpan/rnacos"
 documentation = "https://docs.rs/rnacos/latest"
 readme = "README.md"
 keywords = ["nacos", "rnacos", "registry", "config"]
+exclude = [
+    ".github/*",
+    "book/*",
+    "deploy/*",
+    "doc/*",
+    "docker/*",
+    "proto/*",
+    "tools/*",
+    "sdk-examples/*",
+    "CHANGELOG.md",
+    "Dockerfile",
+    "test_cluster.sh",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -25,6 +38,7 @@ name = "rnacos"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = { version = "0.1", features = ["secure"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
@@ -55,8 +69,8 @@ mime_guess = { version = "2" }
 # db
 rusqlite = { version = "0.25", features = ["bundled"] }
 rsql_builder = "0.1.5"
-inner-mem-cache = "0.1.6"
-rnacos-web-dist-wrap = "=0.4.0-beta.2"
+inner-mem-cache = "0.1.7"
+rnacos-web-dist-wrap = "=0.3.13"
 nacos_rust_client = "0.2"
 zip = "0.6"
 tempfile = "3"
@@ -94,6 +108,7 @@ cbc = "0.1.2"
 quick-protobuf = "0.8.1"
 binrw = "0.13.3"
 binrw_derive = "0.13.3"
+sysinfo = "0.30.12"
 
 [dependencies.uuid]
 version = "1.2.1"
@@ -104,3 +119,8 @@ features = [
 ]
 
 [build-dependencies]
+
+[profile.release]
+#opt-level = 3
+#strip = true
+#lto = true

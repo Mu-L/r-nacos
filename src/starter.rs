@@ -1,6 +1,8 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use crate::common::actor_utils::{create_actor_at_thread, create_actor_at_thread2};
+use crate::grpc::handler::RAFT_ROUTE_REQUEST;
+use crate::metrics::core::MetricsManager;
 use crate::raft::filestore::core::FileStore;
 use crate::raft::filestore::raftapply::StateApplyManager;
 use crate::raft::filestore::raftdata::RaftDataWrap;
@@ -77,7 +79,10 @@ pub async fn config_factory(sys_config: Arc<AppSysConfig>) -> anyhow::Result<Fac
     //raft
     let conn_factory = RaftConnectionFactory::new(60).start();
     factory.register(BeanDefinition::actor_from_obj(conn_factory.clone()));
-    let cluster_sender = Arc::new(RaftClusterRequestSender::new(conn_factory));
+    let cluster_sender = Arc::new(RaftClusterRequestSender::new(
+        conn_factory,
+        sys_config.clone(),
+    ));
     factory.register(BeanDefinition::from_obj(cluster_sender.clone()));
 
     let log_manager = RaftLogManager::new(base_path.clone());
@@ -175,6 +180,8 @@ pub async fn config_factory(sys_config: Arc<AppSysConfig>) -> anyhow::Result<Fac
         //cache: cache_manager.clone(),
     });
     factory.register(BeanDefinition::from_obj(raft_data_wrap));
+    let metrics_manager = MetricsManager::new().start();
+    factory.register(BeanDefinition::actor_with_inject_from_obj(metrics_manager));
 
     Ok(factory.init().await)
 }
@@ -204,6 +211,7 @@ pub fn build_share_data(factory_data: FactoryData) -> anyhow::Result<Arc<AppShar
         raft_cache_route: factory_data.get_bean().unwrap(),
         user_manager: factory_data.get_actor().unwrap(),
         cache_manager: factory_data.get_actor().unwrap(),
+        metrics_manager: factory_data.get_actor().unwrap(),
         factory_data,
         timezone_offset: Arc::new(timezone_offset),
     });
@@ -298,7 +306,7 @@ async fn auto_join_raft(
             node_addr: Arc::new(sys_config.raft_node_addr.to_owned()),
         };
         let request = serde_json::to_string(&req).unwrap_or_default();
-        let payload = PayloadUtils::build_payload("RaftRouteRequest", request);
+        let payload = PayloadUtils::build_payload(RAFT_ROUTE_REQUEST, request);
         cluster_sender
             .send_request(Arc::new(sys_config.raft_join_addr.to_owned()), payload)
             .await?;

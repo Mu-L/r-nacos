@@ -1,10 +1,11 @@
 // raft缓存数据
 
+use std::time::Duration;
 use std::{convert::TryInto, sync::Arc};
 
 use actix::prelude::*;
 use bean_factory::{bean, Inject};
-use inner_mem_cache::MemCache;
+use inner_mem_cache::{MemCache, MemCacheMode};
 use ratelimiter_rs::RateLimiter;
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +42,7 @@ type KvPair = (Vec<u8>, Vec<u8>);
 impl CacheManager {
     pub fn new() -> Self {
         Self {
-            cache: MemCache::default(),
+            cache: MemCache::new(),
             //default_timeout: 1200,
             raft_table_route: None,
             table_manager: None,
@@ -128,10 +129,15 @@ impl Inject for CacheManager {
         self.table_manager = factory_data.get_actor();
         let table_manager = self.table_manager.clone();
         self.cache.time_out_fn = Some(Arc::new(move |key, _value| {
-            CacheManager::remove_key(&table_manager, key.to_string().as_bytes().to_vec());
+            CacheManager::remove_key(&table_manager, key.to_key_string().as_bytes().to_vec());
         }));
         //init
         self.load(ctx).ok();
+        //增加每10秒触发缓存清理
+        self.cache.mode = MemCacheMode::None;
+        ctx.run_interval(Duration::from_millis(10000), |act, _| {
+            act.cache.clear_time_out();
+        });
     }
 }
 
@@ -219,7 +225,7 @@ impl Handler<CacheManagerReq> for CacheManager {
                         cache_do.timeout = now + ttl;
                         let req = TableManagerReq::Set {
                             table_name: CACHE_TREE_NAME.clone(),
-                            key: key.to_string().into_bytes(),
+                            key: key.to_key_string().into_bytes(),
                             value: cache_do.to_bytes(),
                             last_seq_id: None,
                         };
@@ -233,7 +239,7 @@ impl Handler<CacheManagerReq> for CacheManager {
                     if let Some(raft_table_route) = &raft_table_route {
                         let req = TableManagerReq::Remove {
                             table_name: CACHE_TREE_NAME.clone(),
-                            key: key.to_string().into_bytes(),
+                            key: key.to_key_string().into_bytes(),
                         };
                         raft_table_route.request(req).await?;
                     } else {
@@ -323,7 +329,7 @@ impl Handler<CacheLimiterReq> for CacheManager {
             if let Some(table_manager) = self.table_manager.as_ref() {
                 let req: TableManagerReq = TableManagerReq::Set {
                     table_name: CACHE_TREE_NAME.clone(),
-                    key: key.to_string().into_bytes(),
+                    key: key.to_key_string().into_bytes(),
                     value: cache_do.to_bytes(),
                     last_seq_id: None,
                 };

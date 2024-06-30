@@ -109,6 +109,7 @@ impl InnerNodeManage {
                 dels.push(*key);
             }
         }
+        let mut is_change = !dels.is_empty();
         for key in dels {
             self.all_nodes.remove(&key);
         }
@@ -121,6 +122,7 @@ impl InnerNodeManage {
                 let sync_sender = if is_local {
                     None
                 } else {
+                    is_change = true;
                     Some(
                         ClusteSyncSender::new(
                             self.local_id,
@@ -154,6 +156,18 @@ impl InnerNodeManage {
             ctx.run_later(Duration::from_millis(1000), |act, _ctx| {
                 act.load_snapshot_from_node();
             });
+        }
+        if is_change {
+            //集群节点变更化重新刷新服务管理范围
+            self.refresh_process_range();
+        }
+    }
+
+    fn refresh_process_range(&mut self) {
+        if let Some(naming_actor) = &self.naming_actor {
+            naming_actor.do_send(NamingCmd::ClusterRefreshProcessRange(
+                self.current_range.clone(),
+            ));
         }
     }
 

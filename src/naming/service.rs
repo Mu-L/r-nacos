@@ -6,15 +6,18 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 
+use crate::common::constant::EMPTY_ARC_STRING;
+use crate::naming::cluster::model::ProcessRange;
 use actix_web::rt;
+use inner_mem_cache::TimeoutSet;
 
 use crate::now_millis;
 
 use super::{
     api_model::QueryListResult,
     model::{
-        Instance, InstanceShortKey, InstanceTimeInfo, InstanceUpdateTag, ServiceDetailDto,
-        ServiceKey, UpdateInstanceType,
+        Instance, InstanceShortKey, InstanceUpdateTag, ServiceDetailDto, ServiceKey,
+        UpdateInstanceType,
     },
 };
 
@@ -25,7 +28,7 @@ pub struct ServiceMetadata {
 
 type InstanceMetaData = Arc<HashMap<String, String>>;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct Service {
     pub service_name: Arc<String>,
     pub group_name: Arc<String>,
@@ -42,8 +45,11 @@ pub struct Service {
     pub(crate) healthy_instance_size: i64,
     //pub cluster_map:HashMap<String,Cluster>,
     pub(crate) instances: HashMap<InstanceShortKey, Arc<Instance>>,
-    pub(crate) timeinfos: LinkedList<InstanceTimeInfo>,
     pub(crate) instance_metadata_map: HashMap<InstanceShortKey, InstanceMetaData>,
+    /// 健康状态过期记录，过期后把实例状态改为不健康
+    pub(crate) healthy_timeout_set: TimeoutSet<InstanceShortKey>,
+    /// 不健康状态过期记录，过期后反实例删除
+    pub(crate) unhealthy_timeout_set: TimeoutSet<InstanceShortKey>,
 }
 
 impl Service {
@@ -65,12 +71,8 @@ impl Service {
         &mut self,
         mut instance: Instance,
         update_tag: Option<InstanceUpdateTag>,
-    ) -> UpdateInstanceType {
-        /*
-        if instance.service_name=="service-consumer" {
-            //println!("service-consumer update_instance {:?}",&instance);
-        }
-        */
+    ) -> (UpdateInstanceType, Option<Arc<String>>) {
+        //log::info!("test update_instance {:?}", &instance);
         instance.namespace_id = self.namespace_id.clone();
         instance.group_name = self.group_name.clone();
         instance.service_name = self.service_name.clone();
@@ -80,6 +82,7 @@ impl Service {
         let mut rtype = UpdateInstanceType::None;
         let short_key = instance.get_short_key();
         let old_instance = self.instances.get(&key);
+        let mut replace_old_client_id = None;
         if let Some(old_instance) = old_instance {
             if !instance.from_grpc {
                 match (old_instance.from_grpc, old_instance.is_from_cluster()) {
@@ -89,7 +92,7 @@ impl Service {
                             old_instance.from_cluster,
                             instance,
                         );
-                        return rtype;
+                        return (rtype, replace_old_client_id);
                     }
                     (true, false) => {
                         //如果新实例来自http,旧实例来自grpc,则保持grpc的实例信息
@@ -100,6 +103,9 @@ impl Service {
                     (false, _) => {}
                 };
             }
+            if !old_instance.client_id.is_empty() && instance.client_id != old_instance.client_id {
+                replace_old_client_id = Some(old_instance.client_id.clone());
+            }
             if !old_instance.healthy && instance.healthy {
                 self.healthy_instance_size += 1;
             } else if old_instance.healthy && !instance.healthy {
@@ -109,13 +115,13 @@ impl Service {
             if let Some(update_tag) = update_tag {
                 if !update_tag.is_none() {
                     if !update_tag.enabled {
-                        instance.enabled = old_instance.enabled.to_owned();
+                        old_instance.enabled.clone_into(&mut instance.enabled);
                     }
                     if !update_tag.ephemeral {
-                        instance.ephemeral = old_instance.ephemeral.to_owned();
+                        old_instance.ephemeral.clone_into(&mut instance.ephemeral);
                     }
                     if !update_tag.weight {
-                        instance.weight = old_instance.weight.to_owned();
+                        old_instance.weight.clone_into(&mut instance.weight);
                     }
                     if !update_tag.metadata {
                         instance.metadata = old_instance.metadata.clone();
@@ -131,9 +137,9 @@ impl Service {
                     }
                 } else {
                     //不更新
-                    instance.enabled = old_instance.enabled.to_owned();
-                    instance.ephemeral = old_instance.ephemeral.to_owned();
-                    instance.weight = old_instance.weight.to_owned();
+                    old_instance.enabled.clone_into(&mut instance.enabled);
+                    old_instance.ephemeral.clone_into(&mut instance.ephemeral);
+                    old_instance.weight.clone_into(&mut instance.weight);
                     instance.metadata = old_instance.metadata.clone();
                     rtype = UpdateInstanceType::UpdateTime;
                 }
@@ -144,31 +150,46 @@ impl Service {
                 instance.metadata = priority_metadata.clone();
             }
             self.instance_size += 1;
-            self.healthy_instance_size += 1;
+            if instance.healthy {
+                self.healthy_instance_size += 1;
+            }
             rtype = UpdateInstanceType::New;
         }
         let new_instance = Arc::new(instance);
-        //grpc 不走timecheck
-        if !new_instance.from_grpc && !new_instance.is_from_cluster() {
-            let time_info = new_instance.get_time_info();
-            self.update_timeinfos(time_info);
+        if new_instance.is_enable_timeout() {
+            self.healthy_timeout_set.add(
+                new_instance.last_modified_millis as u64,
+                new_instance.get_short_key(),
+            );
         }
         self.instances.insert(key, new_instance);
-        /*
-        if update_mark {
-            self.update_timeinfos(time_info);
-        }
-        */
-        rtype
+        (rtype, replace_old_client_id)
     }
 
-    pub(crate) fn update_timeinfos(&mut self, time_info: InstanceTimeInfo) {
-        for item in &mut self.timeinfos {
-            if item.instance_id == time_info.instance_id {
-                item.enable = false;
-            }
+    ///
+    /// 刷新重新纳入本节点管理的实例
+    /// 增量http实例增加过期管理
+    pub(crate) fn do_refresh_process_range(&mut self) {
+        let instances: Vec<&Arc<Instance>> = self
+            .instances
+            .values()
+            .filter(|instance| !instance.from_grpc && instance.is_from_cluster())
+            .collect();
+        //log::info!("do_refresh_process_range instance size:{}", instances.len());
+        for instance in instances {
+            /*
+            log::info!(
+                "do_refresh_process_range item,key:{:?},last_modified_millis:{},client_id:{}",
+                instance.get_short_key(),
+                instance.last_modified_millis,
+                &instance.client_id
+            );
+             */
+            self.healthy_timeout_set.add(
+                instance.last_modified_millis as u64,
+                instance.get_short_key(),
+            );
         }
-        self.timeinfos.push_back(time_info);
     }
 
     pub(crate) fn time_check(
@@ -176,34 +197,25 @@ impl Service {
         healthy_time: i64,
         offline_time: i64,
     ) -> (Vec<InstanceShortKey>, Vec<InstanceShortKey>) {
-        assert!(healthy_time >= offline_time);
-        let mut i = 0;
-        let t = self.timeinfos.iter();
         let mut remove_list = vec![];
-        let mut update_list = vec![];
-        let mut remove_index = 0;
-        for item in t {
-            i += 1;
-            if !item.enable {
-                continue;
-            }
-            if item.time <= healthy_time {
-                if item.time <= offline_time {
-                    remove_list.push(item.instance_id.clone());
-                    remove_index = i;
-                } else {
-                    update_list.push(item.instance_id.clone());
+        for key in self.unhealthy_timeout_set.timeout(offline_time as u64) {
+            if let Some(instance) = self.instances.get(&key) {
+                if !instance.is_enable_timeout() || instance.last_modified_millis > offline_time {
+                    continue;
                 }
-            } else {
-                break;
             }
+            self.remove_instance(&key, None);
+            remove_list.push(key);
         }
-        self.timeinfos = self.timeinfos.split_off(remove_index);
-        for item in &remove_list {
-            self.remove_instance(item, None);
-        }
-        for item in &update_list {
-            self.update_instance_healthy_unvaild(item);
+        let mut update_list = vec![];
+        for key in self.healthy_timeout_set.timeout(healthy_time as u64) {
+            if let Some(instance) = self.instances.get(&key) {
+                if !instance.is_enable_timeout() || instance.last_modified_millis > healthy_time {
+                    continue;
+                }
+            }
+            self.update_instance_healthy_invalid(&key);
+            update_list.push(key);
         }
         (remove_list, update_list)
     }
@@ -235,13 +247,15 @@ impl Service {
         }
     }
 
-    pub(crate) fn update_instance_healthy_unvaild(&mut self, instance_id: &InstanceShortKey) {
+    pub(crate) fn update_instance_healthy_invalid(&mut self, instance_id: &InstanceShortKey) {
         if let Some(i) = self.instances.remove(instance_id) {
             if i.healthy {
                 self.healthy_instance_size -= 1;
             }
             let mut i = i.as_ref().clone();
             i.healthy = false;
+            self.unhealthy_timeout_set
+                .add(i.last_modified_millis as u64, instance_id.clone());
             self.instances.insert(instance_id.clone(), Arc::new(i));
         }
     }
@@ -337,6 +351,14 @@ impl Service {
 
     pub(crate) fn exist_priority_metadata(&self, instance_key: &InstanceShortKey) -> bool {
         self.instance_metadata_map.contains_key(instance_key)
+    }
+
+    pub(crate) fn get_healthy_timeout_set_item_size(&self) -> usize {
+        self.healthy_timeout_set.item_size()
+    }
+
+    pub(crate) fn get_unhealthy_timeout_set_item_size(&self) -> usize {
+        self.unhealthy_timeout_set.item_size()
     }
 }
 

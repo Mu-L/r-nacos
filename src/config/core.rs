@@ -23,7 +23,9 @@ use super::config_subscribe::Subscriber;
 use super::dal::ConfigHistoryParam;
 use crate::config::config_index::{ConfigQueryParam, TenantIndex};
 use crate::config::config_type::ConfigType;
-use crate::config::model::{ConfigRaftCmd, ConfigRaftResult, ConfigValueDO, HistoryItem};
+use crate::config::model::{
+    ConfigRaftCmd, ConfigRaftResult, ConfigValueDO, HistoryItem, SetConfigParam,
+};
 use crate::config::utils::param_utils;
 use crate::now_millis_i64;
 use crate::raft::filestore::model::SnapshotRecordDto;
@@ -109,6 +111,7 @@ pub struct ConfigValue {
     pub(crate) histories: Vec<HistoryItem>,
     pub(crate) config_type: Option<Arc<String>>,
     pub(crate) desc: Option<Arc<String>>,
+    pub(crate) last_modified: i64,
 }
 
 impl ConfigValue {
@@ -121,6 +124,7 @@ impl ConfigValue {
             histories: vec![],
             config_type: None,
             desc: None,
+            last_modified: now_millis_i64(),
         }
     }
 
@@ -148,6 +152,7 @@ impl ConfigValue {
             }],
             config_type: None,
             desc: None,
+            last_modified: op_time,
         }
     }
 
@@ -176,6 +181,7 @@ impl ConfigValue {
         if self.histories.len() >= 100 {
             self.histories.remove(0);
         }
+        self.last_modified = op_time;
         self.histories.push(item);
     }
 }
@@ -294,7 +300,7 @@ pub enum ListenerResult {
 type ListenerSenderType = tokio::sync::oneshot::Sender<ListenerResult>;
 //type ListenerReceiverType = tokio::sync::oneshot::Receiver<ListenerResult>;
 
-struct ConfigListener {
+pub(crate) struct ConfigListener {
     version: u64,
     listener: HashMap<ConfigKey, Vec<u64>>,
     time_listener: BTreeMap<i64, Vec<OnceListener>>,
@@ -370,14 +376,22 @@ impl ConfigListener {
             self.time_listener.remove(&key);
         }
     }
+
+    pub(crate) fn get_listener_client_size(&self) -> usize {
+        self.sender_map.len()
+    }
+
+    pub(crate) fn get_listener_key_size(&self) -> usize {
+        self.listener.len()
+    }
 }
 
 #[bean(inject)]
 pub struct ConfigActor {
-    cache: HashMap<ConfigKey, ConfigValue>,
-    listener: ConfigListener,
-    subscriber: Subscriber,
-    tenant_index: TenantIndex,
+    pub(crate) cache: HashMap<ConfigKey, ConfigValue>,
+    pub(crate) listener: ConfigListener,
+    pub(crate) subscriber: Subscriber,
+    pub(crate) tenant_index: TenantIndex,
     raft: Option<Weak<NacosRaft>>,
     sequence: SimpleSequence,
 }
@@ -435,44 +449,46 @@ impl ConfigActor {
         self.cache.insert(key, value);
     }
 
-    fn set_config(
-        &mut self,
-        key: ConfigKey,
-        val: Arc<String>,
-        config_type: Option<Arc<String>>,
-        desc: Option<Arc<String>>,
-        history_id: u64,
-        history_table_id: Option<u64>,
-        op_time: i64,
-        op_user: Option<Arc<String>>,
-    ) -> anyhow::Result<ConfigResult> {
-        if let Some(history_table_id) = history_table_id {
+    fn set_config(&mut self, param: SetConfigParam) -> anyhow::Result<ConfigResult> {
+        if let Some(history_table_id) = param.history_table_id {
             self.sequence.set_valid_last_id(history_table_id);
         }
-        if let Some(v) = self.cache.get_mut(&key) {
-            let md5 = get_md5(val.as_str());
-            if let Some(s) = config_type {
+        if let Some(v) = self.cache.get_mut(&param.key) {
+            let md5 = get_md5(param.value.as_str());
+            if let Some(s) = param.config_type {
                 v.config_type = Some(s);
             }
-            if let Some(s) = desc {
+            if let Some(s) = param.desc {
                 v.desc = Some(s);
             }
             if !v.tmp && v.md5.as_str() == md5 {
                 return Ok(ConfigResult::NULL);
             }
             if v.histories.is_empty() {
-                self.tenant_index.insert_config(key.clone());
+                self.tenant_index.insert_config(param.key.clone());
             }
-            v.update_value(val, history_id, op_time, Some(Arc::new(md5)), op_user);
+            v.update_value(
+                param.value,
+                param.history_id,
+                param.op_time,
+                Some(Arc::new(md5)),
+                param.op_user,
+            );
         } else {
-            let mut v = ConfigValue::init(val, history_id, op_time, None, op_user);
-            v.config_type = config_type;
-            v.desc = desc;
-            self.cache.insert(key.clone(), v);
-            self.tenant_index.insert_config(key.clone());
+            let mut v = ConfigValue::init(
+                param.value,
+                param.history_id,
+                param.op_time,
+                None,
+                param.op_user,
+            );
+            v.config_type = param.config_type;
+            v.desc = param.desc;
+            self.cache.insert(param.key.clone(), v);
+            self.tenant_index.insert_config(param.key.clone());
         }
-        self.listener.notify(key.clone());
-        self.subscriber.notify(key);
+        self.listener.notify(param.key.clone());
+        self.subscriber.notify(param.key);
         Ok(ConfigResult::NULL)
     }
 
@@ -517,6 +533,11 @@ impl ConfigActor {
 
     pub fn get_config_info_page(&self, param: &ConfigQueryParam) -> (usize, Vec<ConfigInfoDto>) {
         let (size, list) = self.tenant_index.query_config_page(param);
+
+        if size == 0 {
+            return (size, Vec::new());
+        }
+
         let mut info_list = Vec::with_capacity(size);
         for item in &list {
             if let Some(value) = self.cache.get(item) {
@@ -658,6 +679,7 @@ pub enum ConfigResult {
         md5: Arc<String>,
         config_type: Option<Arc<String>>,
         desc: Option<Arc<String>>,
+        last_modified: i64,
     },
     NULL,
     ChangeKey(Vec<ConfigKey>),
@@ -701,6 +723,7 @@ impl Handler<ConfigCmd> for ConfigActor {
                         md5: v.md5.clone(),
                         config_type: v.config_type.clone(),
                         desc: v.desc.clone(),
+                        last_modified: v.last_modified,
                     });
                 }
             }
@@ -827,18 +850,19 @@ impl Handler<ConfigRaftCmd> for ConfigActor {
                 op_time,
                 op_user,
             } => {
-                let config_key: ConfigKey = (&key as &str).into();
-                self.set_config(
-                    config_key,
+                let key: ConfigKey = (&key as &str).into();
+                let param = SetConfigParam {
+                    key,
                     value,
-                    config_type.map(|v| ConfigType::new_by_value(v.as_ref()).get_value()),
+                    config_type: config_type
+                        .map(|v| ConfigType::new_by_value(v.as_ref()).get_value()),
                     desc,
                     history_id,
                     history_table_id,
                     op_time,
                     op_user,
-                )
-                .ok();
+                };
+                self.set_config(param).ok();
             }
             ConfigRaftCmd::ConfigRemove { key } => {
                 let config_key: ConfigKey = (&key as &str).into();

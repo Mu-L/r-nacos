@@ -140,13 +140,24 @@ rnacos
 |RNACOS_ENABLE_NO_AUTH_CONSOLE|是否开启无鉴权控制台|false|false|0.5.2|
 |RNACOS_CONSOLE_LOGIN_TIMEOUT|控制台登陆有效时长(单位为秒)|一天,86400秒|86400|0.5.0|
 |RNACOS_GMT_OFFSET_HOURS|日志时间的时区，单位小时；默认为本机时区，运行在docker时需要指定|local|8(东8区),-5(西5区)|0.5.7|
+|RNACOS_ENABLE_OPEN_API_AUTH|是否对openapi开启鉴权；（注：nacos切换到r-nacos过程中不要开启鉴权）|false|true|0.5.8|
+|RNACOS_API_LOGIN_TIMEOUT|open api鉴权有效时长，单位为秒；(注：从不鉴权到开启鉴权，需要间隔对应时长以保证客户端token能更新生效)|一小时,3600秒|3600|0.5.8|
+|RNACOS_CLUSTER_TOKEN|集群间的通信请求校验token，空表示不开启校验，设置后只有相同token的节点间才可通讯|空字符串|1234567890abcdefg|0.5.8|
+|RNACOS_INIT_ADMIN_USERNAME|初始化管理员用户名，只在主节点第一次启动时生效|admin|rnacos|0.5.11|
+|RNACOS_INIT_ADMIN_PASSWORD|初始化管理员密码，只在主节点第一次启动时生效|admin|rnacos123456|0.5.11|
+|RNACOS_ENABLE_METRICS|是否开启监控指标功能|true|true|0.5.13|
+|RNACOS_METRICS_COLLECT_INTERVAL_SECOND|监控指标采集指标间隔,单位秒,最小间隔为1秒,不能小于RNACOS_METRICS_LOG_INTERVAL_SECOND|15|5|0.5.14|
+|RNACOS_METRICS_LOG_INTERVAL_SECOND|监控指标采集打印到日志的间隔,单位秒,最小间隔为5秒|60|30|0.5.13|
 
 
 启动配置方式可以参考： [运行参数说明](https://r-nacos.github.io/docs/notes/env_config/)
 
 【集群部署】
 
-集群部署参考： [集群部署](https://r-nacos.github.io/docs/notes/deploy_example/docker_cluster_deploy/)
+集群部署参考文档： 
+
++ [集群部署](https://r-nacos.github.io/docs/notes/cluster_deploy)
++ [集群部署样例](https://r-nacos.github.io/docs/notes/deploy_example/docker_cluster_deploy/)
 
 
 ### 二、运行nacos 应用
@@ -285,7 +296,7 @@ nacos_rust_client = "0.3.0"
 
 ![](https://github.com/r-nacos/r-nacos/raw/master/doc/assets/imgs/20231223222325.png)
 
-系统会默认创建一个名为`admin`的用户，密码为`admin`。 
+系统会默认创建一个名为`admin`的用户，密码为`admin`(也可以通过环境变量 RNACOS_INIT_ADMIN_USERNAME 和 RNACOS_INIT_ADMIN_PASSWORD 修改默认账号的账户名和密码)。 
 
 进去控制台后可按需管理用户。 
 
@@ -337,7 +348,6 @@ nacos_rust_client = "0.3.0"
 访问认证：
 
 1. 有提供获取认证token的接口
-2. 实际请求暂不支持认证，都算认证通过。
 
 配置中心：
 

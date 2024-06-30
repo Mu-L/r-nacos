@@ -1,5 +1,6 @@
 use crate::common::appdata::AppShareData;
-use crate::common::model::{ApiResult, TokenSession};
+use crate::common::model::TokenSession;
+use crate::common::web_utils::get_req_body;
 use crate::raft::cache::model::{CacheKey, CacheType, CacheValue};
 use crate::raft::cache::{CacheLimiterReq, CacheManagerReq, CacheManagerResult};
 use crate::user::{UserManagerReq, UserManagerResult};
@@ -37,13 +38,40 @@ const UNKNOWN_USER: &str = "unknown user!";
 pub async fn login(
     app: web::Data<Arc<AppShareData>>,
     web::Query(a): web::Query<LoginParams>,
-    web::Form(b): web::Form<LoginParams>,
+    payload: web::Payload,
 ) -> actix_web::Result<impl Responder> {
-    if !app.sys_config.openapi_enable_auth {
-        return Ok(HttpResponse::Ok()
-            .body("{\"accessToken\":\"AUTH_DISABLED\",\"tokenTtl\":18000,\"globalAdmin\":true}"));
-    }
+    let body = match get_req_body(payload).await {
+        Ok(v) => v,
+        Err(err) => {
+            return Ok(HttpResponse::InternalServerError().body(err.to_string()));
+        }
+    };
+    let b = match serde_urlencoded::from_bytes(&body) {
+        Ok(v) => v,
+        Err(err) => {
+            return Ok(HttpResponse::InternalServerError().body(err.to_string()));
+        }
+    };
     let param = a.merge(b);
+    match do_login(param, &app).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if !app.sys_config.openapi_enable_auth {
+                Ok(HttpResponse::Ok().body(format!(
+                    "{{\"accessToken\":\"AUTH_DISABLED\",\"tokenTtl\":{},\"globalAdmin\":true}}",
+                    app.sys_config.openapi_login_timeout
+                )))
+            } else {
+                Ok(HttpResponse::Forbidden().body(e.to_string()))
+            }
+        }
+    }
+}
+
+async fn do_login(
+    param: LoginParams,
+    app: &web::Data<Arc<AppShareData>>,
+) -> anyhow::Result<HttpResponse> {
     let username = Arc::new(param.username.unwrap_or_default());
     let password = param.password.unwrap_or_default();
     let limit_key = Arc::new(format!("API_USER_L#{}", &username));
@@ -56,15 +84,12 @@ pub async fn login(
         app.raft_cache_route.request_limiter(limit_req).await
     {
         if !acquire_result {
-            return Ok(HttpResponse::Forbidden().json(ApiResult::<()>::error(
-                "LOGIN_LIMITE_ERROR".to_owned(),
-                Some("Frequent login, please try again later".to_owned()),
-            )));
+            return Err(anyhow::anyhow!(
+                "LOGIN_LIMITE_ERROR,Frequent login, please try again later"
+            ));
         }
     } else {
-        return Ok(
-            HttpResponse::Forbidden().json(ApiResult::<()>::error("SYSTEM_ERROR".to_owned(), None))
-        );
+        return Err(anyhow::anyhow!("SYSTEM_ERROR"));
     }
     let msg = UserManagerReq::CheckUser {
         name: username,
@@ -96,15 +121,15 @@ pub async fn login(
             app.cache_manager.do_send(clear_limit_req);
             let login_result = LoginResult {
                 access_token: Some(token),
-                token_ttl: app.sys_config.console_login_timeout as i64,
+                token_ttl: app.sys_config.openapi_login_timeout as i64,
                 global_admin: false,
             };
             return Ok(HttpResponse::Ok().json(login_result));
         } else {
-            return Ok(HttpResponse::Forbidden().body(UNKNOWN_USER));
+            return Err(anyhow::anyhow!(UNKNOWN_USER));
         }
     }
-    Ok(HttpResponse::Forbidden().body(UNKNOWN_USER))
+    Err(anyhow::anyhow!(UNKNOWN_USER))
 }
 
 pub(crate) async fn mock_token() -> impl Responder {
@@ -113,6 +138,14 @@ pub(crate) async fn mock_token() -> impl Responder {
 
 pub fn login_config(config: &mut web::ServiceConfig) {
     config
-        .service(web::resource("/nacos/v1/auth/users/login").route(web::post().to(login)))
-        .service(web::resource("/nacos/v1/auth/login").route(web::post().to(login)));
+        .service(
+            web::resource("/nacos/v1/auth/users/login")
+                .route(web::post().to(login))
+                .route(web::get().to(login)),
+        )
+        .service(
+            web::resource("/nacos/v1/auth/login")
+                .route(web::post().to(login))
+                .route(web::get().to(login)),
+        );
 }

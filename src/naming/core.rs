@@ -19,7 +19,6 @@ use super::listener::{InnerNamingListener, ListenerItem, NamingListenerCmd};
 use super::model::Instance;
 use super::model::InstanceKey;
 use super::model::InstanceShortKey;
-use super::model::InstanceTimeInfo;
 use super::model::InstanceUpdateTag;
 use super::model::ServiceDetailDto;
 use super::model::ServiceInfo;
@@ -55,24 +54,28 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::constant::EMPTY_ARC_STRING;
+use crate::metrics::metrics_key::MetricsKey;
+use crate::metrics::model::{MetricsItem, MetricsQuery, MetricsRecord};
 use actix::prelude::*;
 
 //#[derive(Default)]
 #[bean(inject)]
 pub struct NamingActor {
-    service_map: HashMap<ServiceKey, Service>,
+    pub(crate) service_map: HashMap<ServiceKey, Service>,
     last_id: u64,
     //用于1.x udp实例变更通知,暂时不启用
     listener_addr: Option<Addr<InnerNamingListener>>,
     delay_notify_addr: Option<Addr<DelayNotifyActor>>,
-    subscriber: Subscriber,
+    pub(crate) subscriber: Subscriber,
     sys_config: NamingSysConfig,
-    empty_service_set: TimeoutSet<ServiceKey>,
-    instance_metadate_set: TimeoutSet<InstanceKey>,
-    namespace_index: NamespaceIndex,
+    pub(crate) empty_service_set: TimeoutSet<ServiceKey>,
+    pub(crate) instance_metadate_set: TimeoutSet<InstanceKey>,
+    pub(crate) namespace_index: NamespaceIndex,
     pub(crate) client_instance_set: HashMap<Arc<String>, HashSet<InstanceKey>>,
     cluster_node_manage: Option<Addr<InnerNodeManage>>,
     cluster_delay_notify: Option<Addr<ClusterInstanceDelayNotifyActor>>,
+    current_range: Option<ProcessRange>,
     //dal_addr: Addr<ServiceDalActor>,
 }
 
@@ -128,6 +131,7 @@ impl NamingActor {
             client_instance_set: Default::default(),
             cluster_node_manage: None,
             cluster_delay_notify: None,
+            current_range: None,
             //dal_addr,
         }
     }
@@ -299,9 +303,11 @@ impl NamingActor {
         } else {
             return UpdateInstanceType::None;
         };
+        let mut real_client_id = None;
         let old_instance = service.remove_instance(instance_id, client_id);
         let now = now_millis();
         let tag = if let Some(old_instance) = &old_instance {
+            real_client_id = Some(old_instance.client_id.clone());
             let short_key = old_instance.get_short_key();
             if service.exist_priority_metadata(&short_key) {
                 let instance_key =
@@ -321,6 +327,13 @@ impl NamingActor {
         }
         let remove_instance = old_instance.filter(|e| !e.is_from_cluster());
         self.do_notify(&tag, key.clone(), remove_instance);
+        if let Some(client_id) = real_client_id {
+            if !client_id.as_ref().is_empty() {
+                let instance_key =
+                    InstanceKey::new_by_service_key(key, instance_id.ip.clone(), instance_id.port);
+                self.remove_client_instance_key(&client_id, &instance_key);
+            }
+        }
         tag
     }
 
@@ -333,30 +346,50 @@ impl NamingActor {
         instance.init();
         //assert!(instance.check_vaild());
         self.create_empty_service(key);
+        let is_from_from_cluster = instance.is_from_cluster();
+        let at_process_range = if instance.from_grpc || !is_from_from_cluster {
+            false
+        } else if let Some(range) = &self.current_range {
+            range.is_range(get_hash_value(&key) as usize)
+        } else {
+            false
+        };
+        if at_process_range {
+            instance.from_cluster = 0;
+            instance.client_id = EMPTY_ARC_STRING.clone();
+        }
         //let cluster_name = instance.cluster_name.clone();
         let service = self.service_map.get_mut(key).unwrap();
+        let client_id = instance.client_id.clone();
+        let instance_key =
+            InstanceKey::new_by_service_key(key, instance.ip.clone(), instance.port.to_owned());
         if (instance.from_grpc || instance.is_from_cluster()) && !instance.client_id.is_empty() {
-            let client_id = instance.client_id.clone();
-            let key =
-                InstanceKey::new_by_service_key(key, instance.ip.clone(), instance.port.to_owned());
             if let Some(set) = self.client_instance_set.get_mut(&client_id) {
-                set.insert(key);
+                set.insert(instance_key.clone());
             } else {
                 let mut set = HashSet::new();
-                set.insert(key);
+                set.insert(instance_key.clone());
                 self.client_instance_set.insert(client_id, set);
             }
         }
-        let instance_key = instance.get_short_key();
-        let tag = service.update_instance(instance, tag);
+        let instance_short_key = instance.get_short_key();
+
+        let (tag, replace_old_client_id) = service.update_instance(instance, tag);
         if let UpdateInstanceType::UpdateOtherClusterMetaData(_, _) = &tag {
             return tag;
         }
-        let instance = service
-            .get_instance(&instance_key)
-            .filter(|e| !e.is_from_cluster());
-        //change notify
-        self.do_notify(&tag, key.clone(), instance);
+        if let Some(replace_old_client_id) = replace_old_client_id {
+            if let Some(set) = self.client_instance_set.get_mut(&replace_old_client_id) {
+                set.remove(&instance_key);
+            }
+        }
+        if !is_from_from_cluster {
+            //change notify
+            let instance = service
+                .get_instance(&instance_short_key)
+                .filter(|e| !e.is_from_cluster());
+            self.do_notify(&tag, key.clone(), instance);
+        }
         tag
     }
 
@@ -367,6 +400,12 @@ impl NamingActor {
                 let short_key = instance_key.get_short_key();
                 self.remove_instance(&service_key, &short_key, Some(client_id));
             }
+        }
+    }
+
+    fn remove_client_instance_key(&mut self, client_id: &Arc<String>, key: &InstanceKey) {
+        if let Some(keys) = self.client_instance_set.get_mut(client_id) {
+            keys.remove(key);
         }
     }
 
@@ -493,12 +532,12 @@ impl NamingActor {
                         );
                     }
                 }
-                if item.instance_size <= 0 {
-                    self.empty_service_set.add(
-                        now + self.sys_config.service_time_out_millis,
-                        item.get_service_key(),
-                    );
-                }
+            }
+            if item.instance_size <= 0 {
+                self.empty_service_set.add(
+                    now + self.sys_config.service_time_out_millis,
+                    item.get_service_key(),
+                );
             }
             change_list.push((service_key, rlist, ulist));
             if size >= self.sys_config.once_time_check_size {
@@ -590,6 +629,11 @@ impl NamingActor {
 
     pub fn get_service_info_page(&self, param: ServiceQueryParam) -> (usize, Vec<ServiceInfoDto>) {
         let (size, list) = self.namespace_index.query_service_page(&param);
+
+        if size == 0 {
+            return (0, Vec::new());
+        }
+
         let mut info_list = Vec::with_capacity(list.len());
         for item in &list {
             if let Some(service) = self.service_map.get(item) {
@@ -661,6 +705,8 @@ impl NamingActor {
         });
     }
 
+    ///
+    /// 构建当前管理服务实例的镜像数据包,用于同步给其它集群实例
     pub fn build_snapshot_data(&self, ranges: Vec<ProcessRange>) -> SnapshotForSend {
         let mut service_details = vec![];
         let mut instances = vec![];
@@ -693,6 +739,21 @@ impl NamingActor {
         }
     }
 
+    ///
+    /// 刷新服务管理范围，在集群节点有变化时触发
+    /// 重新管理更新后的临时实例生命周期
+    fn refresh_process_range(&mut self, range: ProcessRange) -> anyhow::Result<()> {
+        for (service_key, service) in &mut self.service_map {
+            let hash_value = get_hash_value(service_key) as usize;
+            if !range.is_range(hash_value) {
+                continue;
+            }
+            service.do_refresh_process_range();
+        }
+        self.current_range = Some(range);
+        Ok(())
+    }
+
     fn receive_snapshot(&mut self, snapshot: SnapshotForReceive) {
         for service_detail in snapshot.services {
             self.update_service(service_detail);
@@ -710,6 +771,53 @@ impl NamingActor {
             node_manage.do_send(NodeManageRequest::SendToOtherNodes(req));
             node_manage.do_send(NodeManageRequest::RemoveClientId(client_id));
         }
+    }
+
+    pub(crate) fn get_instance_size(&self) -> usize {
+        let mut sum = 0;
+        for service in self.service_map.values() {
+            sum += service.instances.len();
+        }
+        sum
+    }
+
+    pub(crate) fn get_client_instance_set_item_size(&self) -> usize {
+        let mut sum = 0;
+        for set in self.client_instance_set.values() {
+            sum += set.len();
+        }
+        sum
+    }
+
+    pub(crate) fn get_healthy_timeout_set_size(&self) -> usize {
+        let mut sum = 0;
+        for service in self.service_map.values() {
+            sum += service.healthy_timeout_set.len();
+        }
+        sum
+    }
+    pub(crate) fn get_healthy_timeout_set_item_size(&self) -> usize {
+        let mut sum = 0;
+        for service in self.service_map.values() {
+            sum += service.get_healthy_timeout_set_item_size();
+        }
+        sum
+    }
+
+    pub(crate) fn get_unhealthy_timeout_set_size(&self) -> usize {
+        let mut sum = 0;
+        for service in self.service_map.values() {
+            sum += service.unhealthy_timeout_set.len();
+        }
+        sum
+    }
+
+    pub(crate) fn get_unhealthy_timeout_set_item_size(&self) -> usize {
+        let mut sum = 0;
+        for service in self.service_map.values() {
+            sum += service.get_unhealthy_timeout_set_item_size();
+        }
+        sum
     }
 }
 
@@ -741,6 +849,7 @@ pub enum NamingCmd {
     QueryClientInstanceCount,
     QueryDalAddr,
     QuerySnapshot(Vec<ProcessRange>),
+    ClusterRefreshProcessRange(ProcessRange),
     ReceiveSnapshot(SnapshotForReceive),
 }
 
@@ -924,8 +1033,15 @@ impl Handler<NamingCmd> for NamingActor {
                 let res = self.build_snapshot_data(ranges);
                 Ok(NamingResult::Snapshot(res))
             }
+            NamingCmd::ClusterRefreshProcessRange(range) => {
+                self.refresh_process_range(range)?;
+                Ok(NamingResult::NULL)
+            }
             NamingCmd::ReceiveSnapshot(snapshot) => {
                 self.receive_snapshot(snapshot);
+                if let Some(range) = &self.current_range {
+                    self.refresh_process_range(range.clone()).ok();
+                }
                 Ok(NamingResult::NULL)
             }
         }

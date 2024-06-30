@@ -10,12 +10,14 @@ use actix::prelude::*;
 use crate::grpc::bistream_manage::BiStreamManageResult;
 use crate::grpc::nacos_proto::{request_server, Payload};
 use crate::grpc::{PayloadHandler, PayloadUtils, RequestMeta};
+use crate::metrics::metrics_key::MetricsKey;
+use crate::metrics::model::{MetricsItem, MetricsRecord, MetricsRequest};
 use crate::raft::cache::model::{CacheKey, CacheType, CacheValue};
 use crate::raft::cache::{CacheManager, CacheManagerReq, CacheManagerResult};
 
 use super::bistream_conn::BiStreamConn;
 use super::bistream_manage::{BiStreamManage, BiStreamManageCmd};
-use super::handler::InvokerHandler;
+use super::handler::{InvokerHandler, CLUSTER_TOKEN};
 use super::nacos_proto::bi_request_stream_server::BiRequestStream;
 
 pub struct RequestServerImpl {
@@ -52,8 +54,32 @@ impl RequestServerImpl {
             {
                 request_meta.token_session = Some(session);
             }
+        } else if !self.app.sys_config.cluster_token.is_empty() {
+            if let Some(Some(token)) = payload
+                .metadata
+                .as_ref()
+                .map(|e| e.headers.get(CLUSTER_TOKEN))
+            {
+                request_meta.cluster_token_is_valid =
+                    token == self.app.sys_config.cluster_token.as_ref();
+            }
         }
         Ok(())
+    }
+
+    fn record_req_metrics(&self, duration: f64, _success: bool) {
+        self.app
+            .metrics_manager
+            .do_send(MetricsRequest::BatchRecord(vec![
+                MetricsItem::new(
+                    MetricsKey::GrpcRequestHandleRtHistogram,
+                    MetricsRecord::HistogramRecord(duration * 1000f64),
+                ),
+                MetricsItem::new(
+                    MetricsKey::GrpcRequestTotalCount,
+                    MetricsRecord::CounterInc(1),
+                ),
+            ]));
     }
 }
 
@@ -102,6 +128,7 @@ impl request_server::Request for RequestServerImpl {
                                 .unwrap_or_default()
                                 .as_secs_f64();
                             log::error!("{}|err|{}|{}", request_log_info, duration, &err_msg);
+                            self.record_req_metrics(duration, false);
                             return Ok(tonic::Response::new(PayloadUtils::build_error_payload(
                                 301, err_msg,
                             )));
@@ -119,6 +146,7 @@ impl request_server::Request for RequestServerImpl {
                         .unwrap_or_default()
                         .as_secs_f64();
                     log::error!("{}|err|{}|{}", request_log_info, duration, &err_msg);
+                    self.record_req_metrics(duration, false);
                     return Ok(tonic::Response::new(PayloadUtils::build_error_payload(
                         301, err_msg,
                     )));
@@ -145,11 +173,14 @@ impl request_server::Request for RequestServerImpl {
                         ""
                     };
                     log::error!("{}|err|{}|{}", request_log_info, duration, msg);
+                    self.record_req_metrics(duration, false);
                 } else if duration < 1f64 {
                     log::info!("{}|ok|{}", request_log_info, duration);
+                    self.record_req_metrics(duration, true);
                 } else {
                     //slow request handle
                     log::warn!("{}|ok|{}", request_log_info, duration);
+                    self.record_req_metrics(duration, true);
                 }
                 Ok(tonic::Response::new(res.payload))
             }
@@ -157,6 +188,7 @@ impl request_server::Request for RequestServerImpl {
                 //Err(tonic::Status::aborted(e.to_string()))
                 //log::error!("request_server handler error:{:?}",e);
                 log::error!("{}|err|{}|{}", request_log_info, duration, e);
+                self.record_req_metrics(duration, false);
                 Ok(tonic::Response::new(PayloadUtils::build_error_payload(
                     500u16,
                     e.to_string(),

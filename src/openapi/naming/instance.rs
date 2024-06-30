@@ -1,5 +1,4 @@
 #![allow(unused_imports, unused_assignments, unused_variables)]
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,7 +13,10 @@ use crate::common::web_utils::get_req_body;
 use crate::naming::api_model::InstanceVO;
 use crate::naming::core::{NamingActor, NamingCmd, NamingResult};
 use crate::naming::model::{Instance, InstanceUpdateTag, ServiceKey};
-use crate::naming::{NamingUtils, CLIENT_BEAT_INTERVAL_KEY, RESPONSE_CODE_KEY, RESPONSE_CODE_OK};
+use crate::naming::{
+    NamingUtils, CLIENT_BEAT_INTERVAL_KEY, LIGHT_BEAT_ENABLED_KEY, RESPONSE_CODE_KEY,
+    RESPONSE_CODE_OK,
+};
 use crate::openapi::constant::EMPTY;
 use crate::utils::{get_bool_from_string, select_option_by_clone};
 
@@ -23,7 +25,7 @@ pub(super) fn service() -> Scope {
         .service(
             web::resource(EMPTY)
                 .route(web::get().to(get_instance))
-                .route(web::post().to(add_instance))
+                .route(web::post().to(update_instance))
                 .route(web::put().to(update_instance))
                 .route(web::delete().to(del_instance)),
         )
@@ -121,10 +123,10 @@ pub struct InstanceWebQueryListParams {
     pub service_name: Option<String>,
     pub group_name: Option<String>,
     pub clusters: Option<String>,
-    pub healthy_only: Option<bool>,
+    pub healthy_only: Option<String>,
     #[serde(rename = "clientIP")]
     pub client_ip: Option<String>,
-    pub udp_port: Option<u16>,
+    pub udp_port: Option<String>,
 }
 
 impl InstanceWebQueryListParams {
@@ -142,7 +144,7 @@ impl InstanceWebQueryListParams {
         }
         if let Some(_group_name) = self.group_name.as_ref() {
             if !_group_name.is_empty() {
-                group_name = _group_name.to_owned();
+                _group_name.clone_into(&mut group_name)
             }
         }
         let namespace_id = NamingUtils::default_namespace(
@@ -167,7 +169,11 @@ impl InstanceWebQueryListParams {
     }
 
     fn get_addr(&self) -> Option<SocketAddr> {
-        if let Some(port) = &self.udp_port {
+        let port: Option<u16> = self
+            .udp_port
+            .as_ref()
+            .map(|e| e.parse().unwrap_or_default());
+        if let Some(port) = &port {
             if *port == 0u16 {
                 return None;
             }
@@ -190,6 +196,8 @@ pub struct BeatRequest {
     pub group_name: Option<String>,
     pub ephemeral: Option<String>,
     pub beat: Option<String>,
+    pub ip: Option<String>,
+    pub port: Option<u32>,
 }
 
 impl BeatRequest {
@@ -201,11 +209,19 @@ impl BeatRequest {
             group_name: select_option_by_clone(&self.group_name, &o.group_name),
             ephemeral: select_option_by_clone(&self.ephemeral, &o.ephemeral),
             beat: select_option_by_clone(&self.beat, &o.beat),
+            ip: select_option_by_clone(&self.ip, &o.ip),
+            port: select_option_by_clone(&self.port, &o.port),
         }
     }
 
-    pub fn convert_to_instance(self) -> Result<Instance, String> {
-        let beat = self.beat.unwrap_or_default();
+    /*
+    pub fn convert_to_instance_old(self) -> Result<Instance, String> {
+        let beat = match self.beat {
+            Some(v) => v,
+            None => {
+                return Err("beat value is empty".to_string());
+            }
+        };
         let beat_info = match serde_json::from_str::<BeatInfo>(&beat) {
             Ok(v) => v,
             Err(err) => {
@@ -244,6 +260,55 @@ impl BeatRequest {
         instance.generate_key();
         Ok(instance)
     }
+    */
+
+    pub fn convert_to_instance(self) -> anyhow::Result<Instance> {
+        let mut beat_info = self.get_beat_info()?;
+        let use_beat = self.beat.as_ref().map_or(false, |s| !s.is_empty());
+        if !use_beat {
+            beat_info.ip = self.ip;
+            beat_info.port = self.port;
+        }
+        if beat_info.ip.is_none() || beat_info.port.is_none() {
+            return Err(anyhow::anyhow!("ip or port is empty".to_owned()));
+        }
+        let service_name_option = beat_info.service_name.clone();
+        let mut instance = beat_info.convert_to_instance();
+        if service_name_option.is_none() {
+            if let Some(grouped_name) = self.service_name {
+                if let Some((group_name, service_name)) =
+                    NamingUtils::split_group_and_serivce_name(&grouped_name)
+                {
+                    instance.service_name = Arc::new(service_name);
+                    instance.group_name = Arc::new(group_name);
+                }
+            } else {
+                return Err(anyhow::anyhow!("service name is empty".to_owned()));
+            }
+            if let Some(group_name) = self.group_name {
+                if !group_name.is_empty() {
+                    instance.group_name = Arc::new(group_name);
+                }
+            }
+        }
+        instance.ephemeral = get_bool_from_string(&self.ephemeral, true);
+        instance.cluster_name = NamingUtils::default_cluster(self.cluster_name.unwrap_or_default());
+        instance.namespace_id = Arc::new(NamingUtils::default_namespace(
+            self.namespace_id.unwrap_or_default(),
+        ));
+        instance.generate_key();
+        Ok(instance)
+    }
+
+    fn get_beat_info(&self) -> anyhow::Result<BeatInfo> {
+        let beat_str = self.beat.clone().unwrap_or_default();
+        if let Some(beat_str) = self.beat.as_ref() {
+            let v = serde_json::from_str::<BeatInfo>(beat_str)?;
+            Ok(v)
+        } else {
+            Ok(BeatInfo::default())
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -270,12 +335,13 @@ impl BeatInfo {
             ),
             ..Default::default()
         };
-        let grouped_name = self.service_name.as_ref().unwrap().to_owned();
-        if let Some((group_name, service_name)) =
-            NamingUtils::split_group_and_serivce_name(&grouped_name)
-        {
-            instance.service_name = Arc::new(service_name);
-            instance.group_name = Arc::new(group_name);
+        if let Some(grouped_name) = self.service_name.as_ref() {
+            if let Some((group_name, service_name)) =
+                NamingUtils::split_group_and_serivce_name(grouped_name)
+            {
+                instance.service_name = Arc::new(service_name);
+                instance.group_name = Arc::new(group_name);
+            }
         }
         if let Some(metadata) = self.metadata {
             instance.metadata = Arc::new(metadata);
@@ -326,53 +392,6 @@ pub async fn get_instance(
     }
 }
 
-pub async fn add_instance(
-    a: web::Query<InstanceWebParams>,
-    payload: web::Payload,
-    appdata: web::Data<Arc<AppShareData>>,
-) -> impl Responder {
-    let body = match get_req_body(payload).await {
-        Ok(v) => v,
-        Err(err) => {
-            return HttpResponse::InternalServerError().body(err.to_string());
-        }
-    };
-    let b = match serde_urlencoded::from_bytes(&body) {
-        Ok(v) => v,
-        Err(err) => {
-            return HttpResponse::InternalServerError().body(err.to_string());
-        }
-    };
-    let param = a.select_option(&b);
-    let update_tag = InstanceUpdateTag {
-        weight: match &param.weight {
-            Some(v) => *v != 1.0f32,
-            None => false,
-        },
-        metadata: match &param.metadata {
-            Some(v) => !v.is_empty(),
-            None => false,
-        },
-        enabled: false,
-        ephemeral: false,
-        from_update: false,
-    };
-    let instance = param.convert_to_instance();
-    match instance {
-        Ok(instance) => {
-            if !instance.check_vaild() {
-                HttpResponse::InternalServerError().body("instance check is invalid")
-            } else {
-                match appdata.naming_route.update_instance(instance, None).await {
-                    Ok(_) => HttpResponse::Ok().body("ok"),
-                    Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
-                }
-            }
-        }
-        Err(e) => HttpResponse::InternalServerError().body(e),
-    }
-}
-
 pub async fn update_instance(
     a: web::Query<InstanceWebParams>,
     payload: web::Payload,
@@ -397,8 +416,7 @@ pub async fn update_instance(
             None => false,
         },
         metadata: match &param.metadata {
-            //Some(v) => !v.is_empty() && v!="{}",
-            Some(v) => !v.is_empty(),
+            Some(v) => !v.is_empty() && v != "{}",
             None => false,
         },
         enabled: match &param.enabled {
@@ -471,12 +489,7 @@ pub async fn beat_instance(
     payload: web::Payload,
     appdata: web::Data<Arc<AppShareData>>,
 ) -> impl Responder {
-    let body = match get_req_body(payload).await {
-        Ok(v) => v,
-        Err(err) => {
-            return HttpResponse::InternalServerError().body(err.to_string());
-        }
-    };
+    let body = get_req_body(payload).await.unwrap_or_default();
     let b = match serde_urlencoded::from_bytes(&body) {
         Ok(v) => v,
         Err(err) => {
@@ -508,7 +521,7 @@ pub async fn beat_instance(
                         let mut result = HashMap::new();
                         result.insert(RESPONSE_CODE_KEY, serde_json::json!(RESPONSE_CODE_OK));
                         result.insert(CLIENT_BEAT_INTERVAL_KEY, serde_json::json!(5000));
-                        //result.insert(LIGHT_BEAT_ENABLED_KEY, serde_json::json!(false));
+                        result.insert(LIGHT_BEAT_ENABLED_KEY, serde_json::json!(true));
                         let v = serde_json::to_string(&result).unwrap();
                         HttpResponse::Ok()
                             .insert_header(header::ContentType(mime::APPLICATION_JSON))
@@ -518,7 +531,7 @@ pub async fn beat_instance(
                 }
             }
         }
-        Err(e) => HttpResponse::InternalServerError().body(e),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
@@ -527,7 +540,7 @@ pub async fn get_instance_list(
     param: web::Query<InstanceWebQueryListParams>,
     naming_addr: web::Data<Addr<NamingActor>>,
 ) -> impl Responder {
-    let only_healthy = param.healthy_only.unwrap_or(true);
+    let only_healthy = get_bool_from_string(&param.healthy_only, true);
     let addr = param.get_addr();
     match param.to_clusters_key() {
         Ok((key, clusters)) => {
@@ -543,7 +556,9 @@ pub async fn get_instance_list(
                 Ok(res) => {
                     let result: NamingResult = res.unwrap();
                     match result {
-                        NamingResult::InstanceListString(v) => HttpResponse::Ok().body(v),
+                        NamingResult::InstanceListString(v) => HttpResponse::Ok()
+                            .insert_header(header::ContentType(mime::APPLICATION_JSON))
+                            .body(v),
                         _ => HttpResponse::InternalServerError().body("error"),
                     }
                 }

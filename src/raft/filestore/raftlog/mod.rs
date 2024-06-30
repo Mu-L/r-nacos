@@ -1,3 +1,5 @@
+#![allow(clippy::suspicious_open_options)]
+use std::fmt::{Display, Formatter};
 use std::time::Duration;
 use std::{
     io::{Cursor, SeekFrom},
@@ -72,9 +74,10 @@ pub struct LogInnerManager {
     pub(crate) split_off_index: u64,
 }
 
-impl ToString for LogInnerManager {
-    fn to_string(&self) -> String {
-        format!(
+impl Display for LogInnerManager {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
             "header:{:?},indexs count:{},msg_count:{},index_cursor:{},data_cursor:{},file_len:{}",
             &self.header,
             self.indexs.len(),
@@ -912,7 +915,7 @@ impl RaftLogManager {
             }
         }
         let last_log_range = self.logs.last_mut().unwrap();
-        self.current_log_actor = last_log_range.log_actor.clone();
+        self.current_log_actor.clone_from(&last_log_range.log_actor);
     }
 
     fn load_record(

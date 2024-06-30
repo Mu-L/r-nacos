@@ -14,6 +14,7 @@ use super::{
     node_manage::{NodeManage, NodeManageRequest},
 };
 
+use crate::grpc::handler::NAMING_ROUTE_REQUEST;
 use actix::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -79,14 +80,14 @@ impl NamingRoute {
             }
         };
         let request = serde_json::to_string(&req).unwrap_or_default();
-        let payload = PayloadUtils::build_payload("NamingRouteRequest", request);
+        let payload = PayloadUtils::build_payload(NAMING_ROUTE_REQUEST, request);
         let resp_payload = self.cluster_sender.send_request(addr, payload).await?;
         let body_vec = resp_payload.body.unwrap_or_default().value;
         let _: NamingRouterResponse = serde_json::from_slice(&body_vec)?;
 
         //路由在其它节点后，立即同步本节点
         if is_update {
-            if instance.client_id.is_empty() {
+            if instance.client_id.is_empty() && cluster_id > 0 {
                 instance.client_id = Arc::new(format!("{}_G", &cluster_id));
             }
             self.node_manage

@@ -33,11 +33,15 @@ use actix_web::{middleware, HttpServer};
 use clap::Parser;
 use env_logger::TimestampPrecision;
 use env_logger_timezone_fmt::{TimeZoneFormat, TimeZoneFormatEnv};
+//use mimalloc::MiMalloc;
 use rnacos::common::appdata::AppShareData;
 use rnacos::common::constant::APP_VERSION;
 use rnacos::openapi::middle::auth_middle::ApiCheckAuth;
 use rnacos::raft::NacosRaft;
 use rnacos::web_config::{app_config, console_config};
+
+//#[global_allocator]
+//static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser, Clone, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -54,6 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("version:{}, RUST_LOG:{}", APP_VERSION, &rust_log);
     std::env::set_var("RUST_LOG", &rust_log);
     let sys_config = Arc::new(AppSysConfig::init_from_env());
+    println!("data dir:{}", sys_config.config_db_dir);
     let timezone_fmt = Arc::new(TimeZoneFormatEnv::new(
         sys_config.gmt_fixed_offset_hours.map(|v| v * 60 * 60),
         Some(TimestampPrecision::Micros),
@@ -88,10 +93,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .unwrap();
     });
 
-    let app_console_data = app_data.clone();
-    let app_data = app_data;
-
     if sys_config.http_console_port > 0 {
+        let app_console_data = app_data.clone();
+
         std::thread::spawn(move || {
             actix_rt::System::with_tokio_rt(|| {
                 tokio::runtime::Builder::new_current_thread()

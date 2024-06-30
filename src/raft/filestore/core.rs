@@ -1,3 +1,4 @@
+#![allow(clippy::suspicious_open_options)]
 use crate::raft::filestore::model::{ApplyRequestDto, LogIndexInfo};
 use crate::raft::filestore::raftapply::{
     StateApplyAsyncRequest, StateApplyManager, StateApplyRequest, StateApplyResponse,

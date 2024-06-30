@@ -161,4 +161,28 @@ impl Subscriber {
             }
         }
     }
+
+    pub fn get_listener_key_size(&self) -> usize {
+        self.listener.len()
+    }
+
+    pub fn get_listener_value_size(&self) -> usize {
+        let mut sum = 0;
+        for map in self.listener.values() {
+            sum += map.len();
+        }
+        sum
+    }
+
+    pub fn get_client_size(&self) -> usize {
+        self.client_keys.len()
+    }
+
+    pub fn get_client_value_size(&self) -> usize {
+        let mut sum = 0;
+        for item in self.client_keys.values() {
+            sum += item.len();
+        }
+        sum
+    }
 }

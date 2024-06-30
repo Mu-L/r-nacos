@@ -8,6 +8,7 @@ pub mod api_model;
 pub mod bistream_conn;
 pub mod bistream_manage;
 pub mod handler;
+pub mod metrics;
 pub mod nacos_proto;
 pub mod server;
 
@@ -18,6 +19,7 @@ pub struct RequestMeta {
     pub client_version: String,
     pub labels: HashMap<String, String>,
     pub token_session: Option<Arc<TokenSession>>,
+    pub cluster_token_is_valid: bool,
 }
 
 pub struct HandlerResult {

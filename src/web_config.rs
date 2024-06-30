@@ -4,8 +4,9 @@ use mime_guess::from_path;
 use rnacos_web_dist_wrap::get_embedded_file;
 
 use crate::common::AppSysConfig;
-use crate::console::api::{console_api_config, console_api_config_new, console_api_config_v2};
+use crate::console::api::{console_api_config, console_api_config_v1, console_api_config_v2};
 use crate::openapi::auth::{login_config, mock_token};
+use crate::openapi::metrics::metrics_config;
 use crate::openapi::openapi_config;
 use crate::raft::network::raft_config;
 
@@ -82,7 +83,7 @@ async fn disable_no_auth_console_index() -> impl Responder {
 /// 面向SDK的http服务接口
 pub fn app_config(conf_data: AppSysConfig) -> impl FnOnce(&mut ServiceConfig) {
     move |config: &mut ServiceConfig| {
-        let config = if !conf_data.enable_no_auth_console || conf_data.openapi_enable_auth {
+        if !conf_data.enable_no_auth_console || conf_data.openapi_enable_auth {
             config
                 .service(web::resource("/").route(web::get().to(disable_no_auth_console_index)))
                 .service(
@@ -95,17 +96,23 @@ pub fn app_config(conf_data: AppSysConfig) -> impl FnOnce(&mut ServiceConfig) {
                     web::resource("/rnacos").route(web::get().to(disable_no_auth_console_index)),
                 )
                 .service(
-                    web::resource("/rnacos/").route(web::get().to(disable_no_auth_console_index)),
-                )
+                    web::resource("/rnacos/{_:.*}")
+                        .route(web::get().to(disable_no_auth_console_index)),
+                );
+            login_config(config);
+            metrics_config(config);
+            config.configure(openapi_config(conf_data));
+            raft_config(config);
         } else {
-            config
+            login_config(config);
+            metrics_config(config);
+            config.configure(openapi_config(conf_data));
+            raft_config(config);
+            console_api_config(config);
+            console_api_config_v2(config);
+            console_api_config_v1(config);
+            console_page_config(config);
         };
-        login_config(config);
-        raft_config(config);
-        console_api_config(config);
-        console_api_config_new(config);
-        console_page_config(config);
-        config.configure(openapi_config(conf_data));
     }
 }
 
@@ -116,7 +123,9 @@ pub fn app_without_no_auth_console_config(config: &mut web::ServiceConfig) {
         .service(web::resource("/nacos").route(web::get().to(disable_no_auth_console_index)))
         .service(web::resource("/nacos/").route(web::get().to(disable_no_auth_console_index)))
         .service(web::resource("/rnacos").route(web::get().to(disable_no_auth_console_index)))
-        .service(web::resource("/rnacos/").route(web::get().to(disable_no_auth_console_index)))
+        .service(
+            web::resource("/rnacos/{_:.*}").route(web::get().to(disable_no_auth_console_index)),
+        )
         .service(web::resource("/nacos/v1/auth/login").route(web::post().to(mock_token)))
         .service(web::resource("/nacos/v1/auth/users/login").route(web::post().to(mock_token)));
     raft_config(config);
@@ -126,7 +135,7 @@ pub fn app_without_no_auth_console_config(config: &mut web::ServiceConfig) {
 pub fn console_config(config: &mut web::ServiceConfig) {
     //console_api_config(config);
     console_api_config_v2(config);
-    console_api_config_new(config);
+    console_api_config_v1(config);
     console_page_config(config);
 }
 

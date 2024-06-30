@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::config_type::ConfigType;
 use crate::{
     config::core::ConfigKey,
     raft::{
@@ -50,6 +51,18 @@ impl SetConfigReq {
             config_type: None,
             desc: None,
         }
+    }
+
+    pub fn detect_config_type(data_id: Arc<String>) -> Option<Arc<String>> {
+        if let Some(pos) = data_id.rfind('.') {
+            let suffix = &data_id[pos + 1..];
+
+            if !suffix.is_empty() {
+                return Some(ConfigType::new_by_value(suffix).get_value());
+            }
+        }
+
+        None
     }
 }
 

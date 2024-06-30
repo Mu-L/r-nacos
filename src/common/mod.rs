@@ -1,3 +1,4 @@
+use crate::common::string_utils::StringUtils;
 use lazy_static::lazy_static;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -71,6 +72,12 @@ pub struct AppSysConfig {
     pub openapi_login_timeout: i32,
     pub openapi_login_one_minute_limit: u32,
     pub openapi_enable_auth: bool,
+    pub cluster_token: Arc<String>,
+    pub init_admin_username: String,
+    pub init_admin_password: String,
+    pub metrics_enable: bool,
+    pub metrics_collect_interval_second: u64,
+    pub metrics_log_interval_second: u64,
 }
 
 impl AppSysConfig {
@@ -141,6 +148,37 @@ impl AppSysConfig {
             .unwrap_or("false".to_owned())
             .parse()
             .unwrap_or(false);
+        let cluster_token = std::env::var("RNACOS_CLUSTER_TOKEN")
+            .map(Arc::new)
+            .unwrap_or(constant::EMPTY_ARC_STRING.clone());
+        let init_admin_username =
+            StringUtils::map_not_empty(std::env::var("RNACOS_INIT_ADMIN_USERNAME").ok())
+                .unwrap_or("admin".to_owned());
+        let init_admin_password =
+            StringUtils::map_not_empty(std::env::var("RNACOS_INIT_ADMIN_PASSWORD").ok())
+                .unwrap_or("admin".to_owned());
+        let metrics_enable = std::env::var("RNACOS_ENABLE_METRICS")
+            .unwrap_or("true".to_owned())
+            .parse()
+            .unwrap_or(true);
+        let mut metrics_collect_interval_second =
+            std::env::var("RNACOS_METRICS_COLLECT_INTERVAL_SECOND")
+                .unwrap_or("15".to_owned())
+                .parse()
+                .unwrap_or(15);
+        if metrics_collect_interval_second < 1 {
+            metrics_collect_interval_second = 1;
+        }
+        let mut metrics_log_interval_second = std::env::var("RNACOS_METRICS_LOG_INTERVAL_SECOND")
+            .unwrap_or("60".to_owned())
+            .parse()
+            .unwrap_or(60);
+        if metrics_log_interval_second < 5 {
+            metrics_log_interval_second = 5;
+        }
+        if metrics_log_interval_second < metrics_collect_interval_second {
+            metrics_collect_interval_second = metrics_log_interval_second;
+        }
         Self {
             config_db_dir,
             config_db_file,
@@ -161,6 +199,12 @@ impl AppSysConfig {
             openapi_login_one_minute_limit,
             gmt_fixed_offset_hours,
             openapi_enable_auth,
+            cluster_token,
+            init_admin_username,
+            init_admin_password,
+            metrics_enable,
+            metrics_collect_interval_second,
+            metrics_log_interval_second,
         }
     }
 
