@@ -82,7 +82,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">简介</a></li><li class="chapter-item expanded "><a href="quick-started.html"><strong aria-hidden="true">1.</strong> 快速开始</a></li><li class="chapter-item expanded "><a href="cluster_deploy.html"><strong aria-hidden="true">2.</strong> 集群部署</a></li><li class="chapter-item expanded "><a href="deplay_env.html" class="active"><strong aria-hidden="true">3.</strong> 运行参数说明</a></li><li class="chapter-item expanded "><a href="performance.html"><strong aria-hidden="true">4.</strong> 性能与容量说明</a></li><li class="chapter-item expanded "><a href="version_describe.html"><strong aria-hidden="true">5.</strong> 版本说明</a></li><li class="chapter-item expanded "><a href="faq.html"><strong aria-hidden="true">6.</strong> 常见问题</a></li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">7.</strong> 架构</a></li></ol>            </div>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">简介</a></li><li class="chapter-item expanded "><a href="quick-started.html"><strong aria-hidden="true">1.</strong> 快速开始</a></li><li class="chapter-item expanded "><a href="cluster_deploy.html"><strong aria-hidden="true">2.</strong> 集群部署</a></li><li class="chapter-item expanded "><a href="deplay_env.html" class="active"><strong aria-hidden="true">3.</strong> 运行参数说明</a></li><li class="chapter-item expanded "><a href="performance.html"><strong aria-hidden="true">4.</strong> 性能与容量说明</a></li><li class="chapter-item expanded "><a href="version_describe.html"><strong aria-hidden="true">5.</strong> 版本说明</a></li><li class="chapter-item expanded "><a href="faq.html"><strong aria-hidden="true">6.</strong> 常见问题</a></li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">7.</strong> 架构</a></li><li class="chapter-item expanded "><a href="console_api.html"><strong aria-hidden="true">8.</strong> 控制台接口</a></li></ol>            </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
 
@@ -172,7 +172,8 @@ KEY3=VALUE3
 <tr><td>RNACOS_CONSOLE_LOGIN_ONE_HOUR_LIMIT</td><td>r-nacos控制台登录1小时失败次数限制</td><td>默认是5,一个用户连续登陆失败5次，会被锁定1个小时</td><td>5</td><td>0.4.x</td></tr>
 <tr><td>RNACOS_HTTP_WORKERS</td><td>http工作线程数</td><td>cpu核数</td><td>8</td><td>0.1.x</td></tr>
 <tr><td>RNACOS_CONFIG_DB_FILE</td><td>配置中心的本地数据库文件地址【0.2.x后不在使用】</td><td>config.db</td><td>config.db</td><td>0.1.x</td></tr>
-<tr><td>RNACOS_CONFIG_DB_DIR</td><td>配置中心的本地数据库sled文件夹, 会在系统运行时自动创建</td><td>nacos_db</td><td>nacos_db</td><td>0.2.x</td></tr>
+<tr><td>RNACOS_CONFIG_DB_DIR</td><td>配置中心的本地数据库文件夹, 会在系统运行时自动创建【因语义原因，v0.6.x后推荐使用RNACOS_DATA_DIR】</td><td>nacos_db</td><td>nacos_db</td><td>0.2.x</td></tr>
+<tr><td>RNACOS_DATA_DIR</td><td>本地数据库文件夹, 会在系统运行时自动创建【与RNACOS_CONFIG_DB_DIR等价，用于替代RNACOS_CONFIG_DB_DIR】</td><td>linux,MacOS默认为~/.local/share/r-nacos/nacos_db;windows,docker默认为nacos_db</td><td>nacos_db</td><td>0.6.x</td></tr>
 <tr><td>RNACOS_RAFT_NODE_ID</td><td>节点id</td><td>1</td><td>1</td><td>0.3.0</td></tr>
 <tr><td>RNACOS_RAFT_NODE_ADDR</td><td>节点地址Ip:GrpcPort,单节点运行时每次启动都会生效；多节点集群部署时，只取加入集群时配置的值</td><td>127.0.0.1:GrpcPort</td><td>127.0.0.1:9848</td><td>0.3.0</td></tr>
 <tr><td>RNACOS_RAFT_AUTO_INIT</td><td>是否当做主节点初始化,(只在每一次启动时生效)</td><td>节点1时默认为true,节点非1时为false</td><td>true</td><td>0.3.0</td></tr>
@@ -180,6 +181,16 @@ KEY3=VALUE3
 <tr><td>RNACOS_RAFT_SNAPSHOT_LOG_SIZE</td><td>raft打包snapshot镜像的日志数量;即变更日志超过这个值则会触发一次打包镜像</td><td>默认值10000</td><td>10000</td><td>0.5.0</td></tr>
 <tr><td>RUST_LOG</td><td>日志等级:debug,info,warn,error;所有http,grpc请求都会打info日志,如果不观注可以设置为error减少日志量</td><td>info</td><td>error</td><td>0.3.0</td></tr>
 <tr><td>RNACOS_ENABLE_NO_AUTH_CONSOLE</td><td>是否开启无鉴权控制台</td><td>false</td><td>false</td><td>0.5.2</td></tr>
+<tr><td>RNACOS_CONSOLE_LOGIN_TIMEOUT</td><td>控制台登陆有效时长(单位为秒)</td><td>一天,86400秒</td><td>86400</td><td>0.5.0</td></tr>
+<tr><td>RNACOS_GMT_OFFSET_HOURS</td><td>日志时间的时区，单位小时；默认为本机时区，运行在docker时需要指定</td><td>local</td><td>8(东8区),-5(西5区)</td><td>0.5.7</td></tr>
+<tr><td>RNACOS_ENABLE_OPEN_API_AUTH</td><td>是否对openapi开启鉴权；（注：nacos切换到r-nacos过程中不要开启鉴权）</td><td>false</td><td>true</td><td>0.5.8</td></tr>
+<tr><td>RNACOS_API_LOGIN_TIMEOUT</td><td>open api鉴权有效时长，单位为秒；(注：从不鉴权到开启鉴权，需要间隔对应时长以保证客户端token能更新生效)</td><td>一小时,3600秒</td><td>3600</td><td>0.5.8</td></tr>
+<tr><td>RNACOS_CLUSTER_TOKEN</td><td>集群间的通信请求校验token，空表示不开启校验，设置后只有相同token的节点间才可通讯</td><td>空字符串</td><td>1234567890abcdefg</td><td>0.5.8</td></tr>
+<tr><td>RNACOS_INIT_ADMIN_USERNAME</td><td>初始化管理员用户名，只在主节点第一次启动时生效</td><td>admin</td><td>rnacos</td><td>0.5.11</td></tr>
+<tr><td>RNACOS_INIT_ADMIN_PASSWORD</td><td>初始化管理员密码，只在主节点第一次启动时生效</td><td>admin</td><td>rnacos123456</td><td>0.5.11</td></tr>
+<tr><td>RNACOS_ENABLE_METRICS</td><td>是否开启监控指标功能</td><td>true</td><td>true</td><td>0.5.13</td></tr>
+<tr><td>RNACOS_METRICS_LOG_INTERVAL_SECOND</td><td>监控指标采集打印到日志的间隔,单位秒,最小间隔为5秒</td><td>30</td><td>10</td><td>0.5.13</td></tr>
+<tr><td>RNACOS_CONSOLE_ENABLE_CAPTCHA</td><td>验证码的开关</td><td>true</td><td>true</td><td>0.5.14</td></tr>
 </tbody></table>
 <p>注：从v0.3.0开始，默认参数启动的节点会被当做只有一个节点，当前节点是主节点的集群部署。支持其它新增的从节点加入。</p>
 
